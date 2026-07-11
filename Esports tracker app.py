@@ -1,0 +1,158 @@
+
+import streamlit as st
+import pandas as pd
+import sqlite3
+from datetime import datetime, timedelta
+
+# --- DATABASE SETUP ---
+DB_FILE = "esports_stats.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Table for match stats
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS match_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            player_name TEXT,
+            matches_played INTEGER,
+            kills INTEGER,
+            placement_points INTEGER,
+            is_mvp INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- HELPER FUNCTIONS ---
+def save_entry(date, player, matches, kills, placement, is_mvp):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO match_stats (date, player_name, matches_played, kills, placement_points, is_mvp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (date.strftime('%Y-%m-%d'), player, matches, kills, placement, 1 if is_mvp else 0))
+    conn.commit()
+    conn.close()
+
+def load_data():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM match_stats", conn)
+    conn.close()
+    if not df.empty:
+        df['date'] = pd.to_datetime(df['date'])
+        df['total_points'] = df['kills'] + df['placement_points'] # Standard BR scoring, adjust if needed
+    return df
+
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Esports Team Tracker", layout="wide")
+st.title("🎮 Esports Team Session Tracker")
+st.markdown("Log daily sessions, track performance, and view team standings.")
+
+# Sidebar for Data Entry
+st.sidebar.header("📝 Log Session Data")
+with st.sidebar.form(key="stat_form", clear_on_submit=True):
+    log_date = st.date_input("Session Date", datetime.now())
+    player_name = st.text_input("Player Name").strip()
+    matches = st.number_input("Matches Played", min_value=1, step=1, value=1)
+    kills = st.number_input("Total Kills", min_value=0, step=1, value=0)
+    placement = st.number_input("Placement Points", min_value=0, step=1, value=0)
+    is_mvp = st.checkbox("Mark as Player of the Day (MVP)?")
+    
+    submit_btn = st.form_submit_button("Save Session")
+    
+    if submit_btn:
+        if player_name:
+            save_entry(log_date, player_name, matches, kills, placement, is_mvp)
+            st.sidebar.success(f"Data saved for {player_name}!")
+        else:
+            st.sidebar.error("Please enter a player name.")
+
+# Load existing data
+df = load_data()
+
+if df.empty:
+    st.info("No data logged yet. Use the sidebar to add your first session record!")
+else:
+    # --- TABS FOR STANDINGS ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📅 Daily Stats", "🗓️ Weekly Standings", "🏆 Monthly Standings", "📊 Raw History"])
+    
+    # 1. Daily Stats
+    with tab1:
+        st.header("Daily Performance")
+        available_dates = df['date'].dt.date.unique()
+        selected_date = st.selectbox("Select Date to View", sorted(available_dates, reverse=True))
+        
+        daily_df = df[df['date'].dt.date == selected_date]
+        
+        # Display MVP
+        mvp_player = daily_df[daily_df['is_mvp'] == 1]['player_name'].tolist()
+        if mvp_player:
+            st.success(f"⭐ **Player of the Day (MVP):** {', '.join(mvp_player)}")
+        else:
+            st.warning("No MVP designated for this day yet.")
+            
+        # Summary Table
+        summary_daily = daily_df.groupby('player_name').agg({
+            'matches_played': 'sum',
+            'kills': 'sum',
+            'placement_points': 'sum',
+            'total_points': 'sum'
+        }).sort_values(by='total_points', ascending=False)
+        st.dataframe(summary_daily, use_container_width=True)
+
+    # 2. Weekly Standings
+    with tab2:
+        st.header("Weekly Leaderboard (Last 7 Days)")
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        weekly_df = df[df['date'] >= seven_days_ago]
+        
+        if not weekly_df.empty:
+            weekly_summary = weekly_df.groupby('player_name').agg({
+                'matches_played': 'sum',
+                'kills': 'sum',
+                'placement_points': 'sum',
+                'total_points': 'sum',
+                'is_mvp': 'sum'
+            }).rename(columns={'is_mvp': 'MVPs Won'}).sort_values(by='total_points', ascending=False)
+            
+            st.dataframe(weekly_summary, use_container_width=True)
+            
+            # Weekly MVP
+            weekly_mvp = weekly_summary['MVPs Won'].idxmax()
+            if weekly_summary.loc[weekly_mvp, 'MVPs Won'] > 0:
+                st.metric(label="🥇 Weekly MVP (Most Days Won)", value=weekly_mvp)
+        else:
+            st.write("No data for the last 7 days.")
+
+    # 3. Monthly Standings
+    with tab3:
+        st.header("Monthly Leaderboard (Last 30 Days)")
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        monthly_df = df[df['date'] >= thirty_days_ago]
+        
+        if not monthly_df.empty:
+            monthly_summary = monthly_df.groupby('player_name').agg({
+                'matches_played': 'sum',
+                'kills': 'sum',
+                'placement_points': 'sum',
+                'total_points': 'sum',
+                'is_mvp': 'sum'
+            }).rename(columns={'is_mvp': 'MVPs Won'}).sort_values(by='total_points', ascending=False)
+            
+            st.dataframe(monthly_summary, use_container_width=True)
+            
+            # Monthly MVP
+            monthly_mvp = monthly_summary['MVPs Won'].idxmax()
+            if monthly_summary.loc[monthly_mvp, 'MVPs Won'] > 0:
+                st.metric(label="🏆 Monthly MVP", value=monthly_mvp)
+        else:
+            st.write("No data for the last 30 days.")
+
+    # 4. Raw History
+    with tab4:
+        st.header("All Logged Records")
+        st.dataframe(df.sort_values(by='date', ascending=False), use_container_width=True)
